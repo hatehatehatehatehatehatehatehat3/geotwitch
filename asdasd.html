@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<style>
+  body {
+    margin: 0;
+    padding: 20px;
+    background: transparent;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  .widget {
+    display: inline-flex;
+    flex-direction: column;
+    justify-content: center;
+    background: rgba(24, 22, 20, 0.78);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1.5px solid rgba(255, 255, 255, 0.14);
+    border-radius: 22px;
+    padding: 12px 22px;
+    color: #ffffff;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+    min-width: 140px;
+  }
+
+  .top-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 19px;
+    font-weight: 500;
+    line-height: 1.2;
+    margin-bottom: 4px;
+  }
+
+  .flag {
+    width: 22px;
+    height: 15px;
+    border-radius: 2px;
+    object-fit: cover;
+    box-shadow: 0 0 2px rgba(0,0,0,0.5);
+  }
+
+  .bottom-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 19px;
+    line-height: 1.2;
+  }
+
+  .weather {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-weight: 400;
+    color: #e6e6e6;
+  }
+
+  .time {
+    font-weight: 700;
+    letter-spacing: 0.3px;
+  }
+</style>
+</head>
+<body>
+
+<div class="widget">
+  <div class="top-row">
+    <span id="city">Загрузка...</span>
+    <img id="flag" class="flag" src="" alt="" style="display:none;">
+  </div>
+  <div class="bottom-row">
+    <div class="weather">
+      <span id="weather-icon">☁️</span>
+      <span id="temp">--°C</span>
+    </div>
+    <div class="time" id="time">00:00</div>
+  </div>
+</div>
+
+<script>
+  // Вставь сюда свой Pull Key из приложения RealtimeIRL (если хочешь точный GPS с телефона).
+  // Если оставить пустым '', виджет будет сам определять местоположение по IP.
+  const REALTIME_IRL_PULL_KEY = '8cxx8n96am9ucfrm'; 
+
+  let timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  let lastLat = null;
+  let lastLon = null;
+
+  function updateClock() {
+    const now = new Date();
+    const options = { timeZone: timezone, hour: '2-digit', minute: '2-digit', hour12: false };
+    document.getElementById('time').textContent = new Intl.DateTimeFormat('ru-RU', options).format(now);
+  }
+
+  function getWeatherEmoji(code) {
+    if (code === 0) return '☀️';
+    if (code <= 3) return '⛅️';
+    if (code <= 48) return '🌫';
+    if (code <= 67) return '🌧';
+    if (code <= 77) return '❄️';
+    if (code <= 82) return '🌦';
+    if (code <= 99) return '⛈';
+    return '☁️';
+  }
+
+  // Получаем город на русском, флаг, часовой пояс и погоду по координатам
+  async function updateByCoords(lat, lon) {
+    try {
+      // 1. Определяем город и код страны на русском по GPS
+      const geoRes = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=ru`);
+      const geo = await geoRes.json();
+      
+      const cityName = geo.city || geo.locality || geo.principalSubdivision || 'Неизвестно';
+      document.getElementById('city').textContent = cityName;
+
+      if (geo.countryCode) {
+        const flagImg = document.getElementById('flag');
+        flagImg.src = `https://flagcdn.com/w40/${geo.countryCode.toLowerCase()}.png`;
+        flagImg.style.display = 'inline-block';
+      }
+
+      // 2. Получаем погоду И точный часовой пояс по координатам (timezone=auto)
+      const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true&timezone=auto`);
+      const weatherData = await weatherRes.json();
+      
+      if (weatherData.timezone) {
+        timezone = weatherData.timezone;
+        updateClock();
+      }
+
+      const temp = Math.round(weatherData.current_weather.temperature);
+      const code = weatherData.current_weather.weathercode;
+      document.getElementById('temp').textContent = `${temp}°C`;
+      document.getElementById('weather-icon').textContent = getWeatherEmoji(code);
+    } catch (e) {
+      console.error('Ошибка обновления по координатам:', e);
+    }
+  }
+
+  // Запасной метод: по IP
+  async function fetchByIP() {
+    try {
+      const geoRes = await fetch('http://ip-api.com/json/?lang=ru');
+      const geo = await geoRes.json();
+      if (geo.status === 'success') {
+        await updateByCoords(geo.lat, geo.lon);
+      }
+    } catch (e) {
+      document.getElementById('city').textContent = 'Нет сети';
+    }
+  }
+
+  // Основной метод для IRL: берем GPS из RealtimeIRL
+  async function fetchFromRealtimeIRL() {
+    if (!REALTIME_IRL_PULL_KEY) {
+      return fetchByIP();
+    }
+    try {
+      const res = await fetch(`https://rtirl.com/api/pull?key=${REALTIME_IRL_PULL_KEY}`);
+      const data = await res.json();
+      if (data && data.location) {
+        const { latitude, longitude } = data.location;
+        // Обновляем данные только если сдвинулись больше чем на ~500 метров (чтобы не спамить запросами)
+        if (!lastLat || Math.abs(latitude - lastLat) > 0.005 || Math.abs(longitude - lastLon) > 0.005) {
+          lastLat = latitude;
+          lastLon = longitude;
+          await updateByCoords(latitude, longitude);
+        }
+      }
+    } catch (e) {
+      console.error('Ошибка RealtimeIRL:', e);
+    }
+  }
+
+  updateClock();
+  setInterval(updateClock, 1000);
+
+  if (REALTIME_IRL_PULL_KEY) {
+    fetchFromRealtimeIRL();
+    // Проверяем GPS каждые 30 секунд
+    setInterval(fetchFromRealtimeIRL, 30 * 1000);
+  } else {
+    fetchByIP();
+    setInterval(fetchByIP, 15 * 60 * 1000);
+  }
+</script>
+
+</body>
+</html>
